@@ -1,0 +1,9 @@
+bin/
+obj/
+*.dll
+*.pdb
+*.zip
+release_pkg/
+*.user
+*.suo
+*.tmp
