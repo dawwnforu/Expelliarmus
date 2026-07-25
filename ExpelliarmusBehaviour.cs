@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -209,188 +210,147 @@ namespace Expelliarmus
                 return false;
             }
 
-            bool success = false;
+            object targetPlayer = GetMemberValue(targetCharacter, "player");
+            object targetSlot = FindSlotContainingItem(targetPlayer, item);
+            if (targetPlayer == null || targetSlot == null)
+            {
+                logger.LogInfo("Expelliarmus: could not resolve the target inventory slot.");
+                return false;
+            }
 
-            // First break the original owner's hand/inventory relationship.
-            // Without this, PEAK can leave both characters referencing the same currentItem.
-            DisarmTargetOwner(targetCharacter, item);
+            byte targetSlotID = Convert.ToByte(GetMemberValue(targetSlot, "itemSlotID"));
+            if (!DropLocalHeldItem(localCharacter))
+            {
+                logger.LogInfo("Expelliarmus: could not drop the local held item.");
+                return false;
+            }
 
-            // Transfer the inventory slot data before trying the visual hand attach.
-            success |= TryTransferInventorySlot(localCharacter, targetCharacter, item);
+            object targetPlayerView = GetMemberValue(targetPlayer, "view");
+            bool removeSent = SendPhotonRpc(
+                targetPlayerView,
+                "RPCRemoveItemFromSlot",
+                "MasterClient",
+                targetSlotID);
 
-            // Let PEAK's native pickup path run after the target is no longer holding it.
-            success |= TryInvoke(item, "RequestPickup", localView);
+            if (!removeSent)
+            {
+                logger.LogInfo("Expelliarmus: failed to send the target inventory removal RPC.");
+                return false;
+            }
 
-            // Visual/state path: force equip/attach if the pickup RPC did not immediately win.
+            StartCoroutine(FinishStealAfterInventorySync(localView, item));
+            logger.LogInfo("Expelliarmus: transfer requested for target slot " + targetSlotID + ".");
+            return true;
+        }
+
+        private bool DropLocalHeldItem(object localCharacter)
+        {
+            object currentItem = GetCurrentItem(localCharacter);
+            if (currentItem == null)
+            {
+                return true;
+            }
+
+            object localPlayer = GetMemberValue(localCharacter, "player");
+            object localSlot = FindSlotContainingItem(localPlayer, currentItem);
+            if (localSlot == null)
+            {
+                logger.LogInfo("Expelliarmus: local current item has no inventory slot.");
+                return false;
+            }
+
+            byte localSlotID = Convert.ToByte(GetMemberValue(localSlot, "itemSlotID"));
+            Component currentItemComponent = currentItem as Component;
+            Vector3 dropPosition = currentItemComponent != null
+                ? currentItemComponent.transform.position + Vector3.down * 0.2f
+                : ((Component)localCharacter).transform.position + Vector3.up;
+
             object localItems = GetComponentFromCharacter(localCharacter, "CharacterItems");
-            if (localItems != null)
-            {
-                success |= TryInvoke(localItems, "Equip", item);
-                success |= TryInvoke(localItems, "AttachItem", item);
-                TryInvoke(localItems, "HoldItem", item);
-            }
+            object localItemsView = GetMemberValue(localItems, "photonView");
+            bool dropSent = SendPhotonRpc(
+                localItemsView,
+                "DropItemFromSlotRPC",
+                "MasterClient",
+                localSlotID,
+                dropPosition);
+            bool unequipSent = SendPhotonRpc(
+                localItemsView,
+                "EquipSlotRpc",
+                "All",
+                -1,
+                -1);
 
-            ForceItemStateHeld(item, localCharacter);
-            SetCurrentItem(localCharacter, item);
-            return success;
+            if (dropSent && unequipSent)
+            {
+                logger.LogInfo("Expelliarmus: dropped local held slot " + localSlotID + ".");
+            }
+            return dropSent && unequipSent;
         }
 
-        private void DisarmTargetOwner(object targetCharacter, object item)
+        private IEnumerator FinishStealAfterInventorySync(object localView, object item)
         {
-            object targetItems = GetComponentFromCharacter(targetCharacter, "CharacterItems");
-            if (targetItems != null)
+            yield return new WaitForSeconds(0.12f);
+
+            Component itemComponent = item as Component;
+            if (itemComponent == null)
             {
-                TryInvoke(targetItems, "UnAttachEquippedItem");
-                TryInvoke(targetItems, "UnAttachItem");
+                logger.LogInfo("Expelliarmus: target item disappeared before pickup request.");
+                yield break;
             }
 
-            SetCurrentItem(targetCharacter, null);
-            ClearItemHolderFields(item, targetCharacter);
-            ForceItemStateGround(item);
+            object itemView = GetMemberValue(item, "view");
+            if (itemView == null)
+            {
+                itemView = GetMemberValue(item, "photonView");
+            }
+
+            bool requestSent = SendPhotonRpc(
+                itemView,
+                "RequestPickup",
+                "MasterClient",
+                localView);
+            logger.LogInfo(requestSent
+                ? "Expelliarmus: master pickup request sent."
+                : "Expelliarmus: failed to send master pickup request.");
         }
 
-        private bool TryTransferInventorySlot(object localCharacter, object targetCharacter, object item)
+        private bool SendPhotonRpc(
+            object photonView,
+            string rpcMethodName,
+            string rpcTargetName,
+            params object[] rpcArguments)
         {
+            if (photonView == null) return false;
+
             try
             {
-                object localPlayer = GetMemberValue(localCharacter, "player");
-                object targetPlayer = GetMemberValue(targetCharacter, "player");
-                if (localPlayer == null || targetPlayer == null) return false;
+                Type rpcTargetType = photonView.GetType().Assembly.GetType("Photon.Pun.RpcTarget");
+                if (rpcTargetType == null) return false;
 
-                object targetSlot = FindSlotContainingItem(targetPlayer, item);
-                object localSlot = FindEmptySlot(localPlayer);
-                if (targetSlot == null || localSlot == null)
+                object rpcTarget = Enum.Parse(rpcTargetType, rpcTargetName);
+                foreach (MethodInfo method in photonView.GetType().GetMethods(
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
-                    logger.LogInfo("Expelliarmus: slot transfer skipped. targetSlot=" + (targetSlot != null) + " localSlot=" + (localSlot != null));
-                    return TryAddToLocalInventory(localCharacter, targetCharacter, item);
+                    if (method.Name != "RPC") continue;
+                    ParameterInfo[] parameters = method.GetParameters();
+                    if (parameters.Length != 3) continue;
+                    if (parameters[0].ParameterType != typeof(string)) continue;
+                    if (parameters[1].ParameterType != rpcTargetType) continue;
+                    if (parameters[2].ParameterType != typeof(object[])) continue;
+
+                    method.Invoke(
+                        photonView,
+                        new object[] { rpcMethodName, rpcTarget, rpcArguments });
+                    logger.LogInfo(
+                        "Sent RPC " + rpcMethodName + " -> " + rpcTargetName + ".");
+                    return true;
                 }
-
-                object prefab = GetMemberValue(targetSlot, "prefab");
-                object data = GetMemberValue(targetSlot, "data");
-                byte targetSlotID = Convert.ToByte(GetMemberValue(targetSlot, "itemSlotID"));
-                byte localSlotID = Convert.ToByte(GetMemberValue(localSlot, "itemSlotID"));
-
-                if (!TryInvoke(localSlot, "SetItem", prefab, data))
-                {
-                    return TryAddToLocalInventory(localCharacter, targetCharacter, item);
-                }
-
-                TryInvoke(targetSlot, "EmptyOut");
-                TryInvoke(targetPlayer, "RPCRemoveItemFromSlot", targetSlotID);
-
-                object localItems = GetComponentFromCharacter(localCharacter, "CharacterItems");
-                if (localItems != null)
-                {
-                    TryInvoke(localItems, "OnPickupAccepted", localSlotID);
-                    TryInvoke(localItems, "Equip", item);
-                    TryInvoke(localItems, "AttachItem", item);
-                    SetSelectedSlot(localItems, localSlotID);
-                }
-
-                TryInvoke(localPlayer, "SyncInventoryRPC", new byte[0], true);
-                TryInvoke(targetPlayer, "SyncInventoryRPC", new byte[0], true);
-                logger.LogInfo("Expelliarmus transferred slot target=" + targetSlotID + " -> local=" + localSlotID);
-                return true;
             }
             catch (Exception ex)
             {
-                logger.LogDebug("TryTransferInventorySlot: " + ex.Message);
-                return false;
+                logger.LogDebug("SendPhotonRpc " + rpcMethodName + ": " + ex.Message);
             }
-        }
-
-        private bool TryAddToLocalInventory(object localCharacter, object targetCharacter, object item)
-        {
-            try
-            {
-                object localPlayer = GetMemberValue(localCharacter, "player");
-                object targetPlayer = GetMemberValue(targetCharacter, "player");
-                if (localPlayer == null || targetPlayer == null) return false;
-
-                ushort itemID = Convert.ToUInt16(GetMemberValue(item, "itemID"));
-                object data = GetMemberValue(item, "data");
-
-                object[] addArgs = new object[] { itemID, data, null };
-                var addMethod = FindMethod(localPlayer.GetType(), "AddItem", 3);
-                if (addMethod == null) return false;
-
-                bool added = (bool)addMethod.Invoke(localPlayer, addArgs);
-                if (!added) return false;
-
-                object addedSlot = addArgs[2];
-                byte targetSlot = GetSelectedSlot(targetCharacter);
-                TryInvoke(targetPlayer, "RPCRemoveItemFromSlot", targetSlot);
-
-                object localItems = GetComponentFromCharacter(localCharacter, "CharacterItems");
-                if (localItems != null && addedSlot != null)
-                {
-                    byte localSlot = Convert.ToByte(GetMemberValue(addedSlot, "itemSlotID"));
-                    TryInvoke(localItems, "OnPickupAccepted", localSlot);
-                    SetSelectedSlot(localItems, localSlot);
-                }
-
-                logger.LogInfo("Expelliarmus used Player.AddItem + RPCRemoveItemFromSlot. targetSlot=" + targetSlot);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug("TryAddToLocalInventory: " + ex.Message);
-                return false;
-            }
-        }
-
-        private void ForceItemStateHeld(object item, object holder)
-        {
-            try
-            {
-                TryInvoke(item, "SetState", Enum.Parse(GetMemberValue(item, "itemState").GetType(), "Held"), holder);
-                TryInvoke(item, "SetKinematicNetworked", true);
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug("ForceItemStateHeld: " + ex.Message);
-            }
-        }
-
-        private void ForceItemStateGround(object item)
-        {
-            try
-            {
-                object state = GetMemberValue(item, "itemState");
-                if (state != null)
-                {
-                    TryInvoke(item, "SetState", Enum.Parse(state.GetType(), "Ground"), null);
-                }
-                TryInvoke(item, "SetKinematicNetworked", false);
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug("ForceItemStateGround: " + ex.Message);
-            }
-        }
-
-        private void ClearItemHolderFields(object item, object oldHolder)
-        {
-            string[] names = {
-                "_holderCharacter", "overrideHolderCharacter", "holderCharacter",
-                "wearerCharacter", "lastHolderCharacter", "lastThrownCharacter"
-            };
-
-            foreach (var name in names)
-            {
-                object current = GetMemberValue(item, name);
-                if (current == null || ReferenceEquals(current, oldHolder))
-                {
-                    SetMemberValue(item, name, null);
-                }
-            }
-        }
-
-        private void SetCurrentItem(object character, object item)
-        {
-            object data = GetMemberValue(character, "data");
-            if (data == null) return;
-            SetMemberValue(data, "_currentitem", item);
+            return false;
         }
 
         private object FindSlotContainingItem(object player, object item)
@@ -409,6 +369,12 @@ namespace Expelliarmus
                 object prefab = GetMemberValue(slot, "prefab");
 
                 if (itemData != null && ReferenceEquals(slotData, itemData)) return slot;
+                if (itemData != null && slotData != null)
+                {
+                    object itemGuid = GetMemberValue(itemData, "guid");
+                    object slotGuid = GetMemberValue(slotData, "guid");
+                    if (itemGuid != null && itemGuid.Equals(slotGuid)) return slot;
+                }
                 if (prefab != null && itemID != null)
                 {
                     object prefabID = GetMemberValue(prefab, "itemID");
