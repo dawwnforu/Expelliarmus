@@ -8,8 +8,8 @@ namespace Expelliarmus
 {
     public class ExpelliarmusBehaviour : MonoBehaviour
     {
-        private const float MAX_RANGE = 4.5f;
-        private const float AIM_ITEM_ANGLE = 18f;
+        private const float MAX_RANGE = 7.5f;
+        private const float AIM_ITEM_ANGLE = 25f;
         private const float COOLDOWN = 0.4f;
 
         private static ManualLogSource logger;
@@ -211,11 +211,15 @@ namespace Expelliarmus
 
             bool success = false;
 
-            // Best path: let PEAK's item pickup RPC reassign the item to the local character.
-            success |= TryInvoke(item, "RequestPickup", localView);
+            // First break the original owner's hand/inventory relationship.
+            // Without this, PEAK can leave both characters referencing the same currentItem.
+            DisarmTargetOwner(targetCharacter, item);
 
-            // Inventory path: add item data to local player and remove from target slot if possible.
-            success |= TryAddToLocalInventory(localCharacter, targetCharacter, item);
+            // Transfer the inventory slot data before trying the visual hand attach.
+            success |= TryTransferInventorySlot(localCharacter, targetCharacter, item);
+
+            // Let PEAK's native pickup path run after the target is no longer holding it.
+            success |= TryInvoke(item, "RequestPickup", localView);
 
             // Visual/state path: force equip/attach if the pickup RPC did not immediately win.
             object localItems = GetComponentFromCharacter(localCharacter, "CharacterItems");
@@ -227,7 +231,72 @@ namespace Expelliarmus
             }
 
             ForceItemStateHeld(item, localCharacter);
+            SetCurrentItem(localCharacter, item);
             return success;
+        }
+
+        private void DisarmTargetOwner(object targetCharacter, object item)
+        {
+            object targetItems = GetComponentFromCharacter(targetCharacter, "CharacterItems");
+            if (targetItems != null)
+            {
+                TryInvoke(targetItems, "UnAttachEquippedItem");
+                TryInvoke(targetItems, "UnAttachItem");
+            }
+
+            SetCurrentItem(targetCharacter, null);
+            ClearItemHolderFields(item, targetCharacter);
+            ForceItemStateGround(item);
+        }
+
+        private bool TryTransferInventorySlot(object localCharacter, object targetCharacter, object item)
+        {
+            try
+            {
+                object localPlayer = GetMemberValue(localCharacter, "player");
+                object targetPlayer = GetMemberValue(targetCharacter, "player");
+                if (localPlayer == null || targetPlayer == null) return false;
+
+                object targetSlot = FindSlotContainingItem(targetPlayer, item);
+                object localSlot = FindEmptySlot(localPlayer);
+                if (targetSlot == null || localSlot == null)
+                {
+                    logger.LogInfo("Expelliarmus: slot transfer skipped. targetSlot=" + (targetSlot != null) + " localSlot=" + (localSlot != null));
+                    return TryAddToLocalInventory(localCharacter, targetCharacter, item);
+                }
+
+                object prefab = GetMemberValue(targetSlot, "prefab");
+                object data = GetMemberValue(targetSlot, "data");
+                byte targetSlotID = Convert.ToByte(GetMemberValue(targetSlot, "itemSlotID"));
+                byte localSlotID = Convert.ToByte(GetMemberValue(localSlot, "itemSlotID"));
+
+                if (!TryInvoke(localSlot, "SetItem", prefab, data))
+                {
+                    return TryAddToLocalInventory(localCharacter, targetCharacter, item);
+                }
+
+                TryInvoke(targetSlot, "EmptyOut");
+                TryInvoke(targetPlayer, "RPCRemoveItemFromSlot", targetSlotID);
+
+                object localItems = GetComponentFromCharacter(localCharacter, "CharacterItems");
+                if (localItems != null)
+                {
+                    TryInvoke(localItems, "OnPickupAccepted", localSlotID);
+                    TryInvoke(localItems, "Equip", item);
+                    TryInvoke(localItems, "AttachItem", item);
+                    SetSelectedSlot(localItems, localSlotID);
+                }
+
+                TryInvoke(localPlayer, "SyncInventoryRPC", new byte[0], true);
+                TryInvoke(targetPlayer, "SyncInventoryRPC", new byte[0], true);
+                logger.LogInfo("Expelliarmus transferred slot target=" + targetSlotID + " -> local=" + localSlotID);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug("TryTransferInventorySlot: " + ex.Message);
+                return false;
+            }
         }
 
         private bool TryAddToLocalInventory(object localCharacter, object targetCharacter, object item)
@@ -248,9 +317,19 @@ namespace Expelliarmus
                 bool added = (bool)addMethod.Invoke(localPlayer, addArgs);
                 if (!added) return false;
 
-                byte slot = GetSelectedSlot(targetCharacter);
-                TryInvoke(targetPlayer, "RPCRemoveItemFromSlot", slot);
-                logger.LogInfo("Expelliarmus used Player.AddItem + RPCRemoveItemFromSlot. slot=" + slot);
+                object addedSlot = addArgs[2];
+                byte targetSlot = GetSelectedSlot(targetCharacter);
+                TryInvoke(targetPlayer, "RPCRemoveItemFromSlot", targetSlot);
+
+                object localItems = GetComponentFromCharacter(localCharacter, "CharacterItems");
+                if (localItems != null && addedSlot != null)
+                {
+                    byte localSlot = Convert.ToByte(GetMemberValue(addedSlot, "itemSlotID"));
+                    TryInvoke(localItems, "OnPickupAccepted", localSlot);
+                    SetSelectedSlot(localItems, localSlot);
+                }
+
+                logger.LogInfo("Expelliarmus used Player.AddItem + RPCRemoveItemFromSlot. targetSlot=" + targetSlot);
                 return true;
             }
             catch (Exception ex)
@@ -270,6 +349,110 @@ namespace Expelliarmus
             catch (Exception ex)
             {
                 logger.LogDebug("ForceItemStateHeld: " + ex.Message);
+            }
+        }
+
+        private void ForceItemStateGround(object item)
+        {
+            try
+            {
+                object state = GetMemberValue(item, "itemState");
+                if (state != null)
+                {
+                    TryInvoke(item, "SetState", Enum.Parse(state.GetType(), "Ground"), null);
+                }
+                TryInvoke(item, "SetKinematicNetworked", false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug("ForceItemStateGround: " + ex.Message);
+            }
+        }
+
+        private void ClearItemHolderFields(object item, object oldHolder)
+        {
+            string[] names = {
+                "_holderCharacter", "overrideHolderCharacter", "holderCharacter",
+                "wearerCharacter", "lastHolderCharacter", "lastThrownCharacter"
+            };
+
+            foreach (var name in names)
+            {
+                object current = GetMemberValue(item, name);
+                if (current == null || ReferenceEquals(current, oldHolder))
+                {
+                    SetMemberValue(item, name, null);
+                }
+            }
+        }
+
+        private void SetCurrentItem(object character, object item)
+        {
+            object data = GetMemberValue(character, "data");
+            if (data == null) return;
+            SetMemberValue(data, "_currentitem", item);
+        }
+
+        private object FindSlotContainingItem(object player, object item)
+        {
+            object slotsObject = GetMemberValue(player, "itemSlots");
+            Array slots = slotsObject as Array;
+            if (slots == null) return null;
+
+            object itemData = GetMemberValue(item, "data");
+            object itemID = GetMemberValue(item, "itemID");
+
+            foreach (object slot in slots)
+            {
+                if (slot == null) continue;
+                object slotData = GetMemberValue(slot, "data");
+                object prefab = GetMemberValue(slot, "prefab");
+
+                if (itemData != null && ReferenceEquals(slotData, itemData)) return slot;
+                if (prefab != null && itemID != null)
+                {
+                    object prefabID = GetMemberValue(prefab, "itemID");
+                    if (prefabID != null && prefabID.Equals(itemID)) return slot;
+                }
+            }
+
+            return null;
+        }
+
+        private object FindEmptySlot(object player)
+        {
+            object slotsObject = GetMemberValue(player, "itemSlots");
+            Array slots = slotsObject as Array;
+            if (slots == null) return null;
+
+            foreach (object slot in slots)
+            {
+                if (slot == null) continue;
+                object id = GetMemberValue(slot, "itemSlotID");
+                if (id != null && Convert.ToByte(id) > 2) continue;
+
+                if (TryInvokeBool(slot, "IsEmpty"))
+                {
+                    return slot;
+                }
+            }
+
+            foreach (object slot in slots)
+            {
+                if (slot != null && TryInvokeBool(slot, "IsEmpty")) return slot;
+            }
+
+            return null;
+        }
+
+        private void SetSelectedSlot(object characterItems, byte slotID)
+        {
+            object selected = GetMemberValue(characterItems, "currentSelectedSlot");
+            if (selected == null) return;
+
+            if (!SetMemberValue(selected, "value", slotID))
+            {
+                SetFirstByteField(selected, slotID);
             }
         }
 
@@ -344,10 +527,25 @@ namespace Expelliarmus
             catch (Exception ex)
             {
                 logger.LogDebug("TryInvoke " + methodName + ": " + ex.Message);
+            }
+            return false;
+        }
+
+        private bool TryInvokeBool(object target, string methodName)
+        {
+            if (target == null) return false;
+            try
+            {
+                var method = FindMethod(target.GetType(), methodName, 0);
+                if (method == null) return false;
+                object result = method.Invoke(target, null);
+                return result is bool && (bool)result;
+            }
+            catch
+            {
                 return false;
             }
         }
-
         private MethodInfo FindMethod(Type type, string name, int argCount)
         {
             var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
@@ -370,6 +568,51 @@ namespace Expelliarmus
             var prop = AccessTools.Property(type, name);
             if (prop != null) return prop.GetValue(target, null);
             return null;
+        }
+
+        private bool SetMemberValue(object target, string name, object value)
+        {
+            if (target == null) return false;
+            try
+            {
+                var type = target.GetType();
+                var field = AccessTools.Field(type, name);
+                if (field != null)
+                {
+                    field.SetValue(target, value);
+                    return true;
+                }
+
+                var prop = AccessTools.Property(type, name);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(target, value, null);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug("SetMemberValue " + name + ": " + ex.Message);
+            }
+            return false;
+        }
+
+        private bool SetFirstByteField(object target, byte value)
+        {
+            if (target == null) return false;
+            try
+            {
+                foreach (var field in target.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    if (field.FieldType == typeof(byte))
+                    {
+                        field.SetValue(target, value);
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         private string CharacterName(object character)
