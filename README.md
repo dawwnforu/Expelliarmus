@@ -45,3 +45,13 @@ PEAK\BepInEx\LogOutput.log
 ```
 
 Steam 更新可能会重建 PEAK 游戏目录并删除 `BepInEx`、`winhttp.dll` 和插件。若日志文件或整个 `BepInEx` 目录消失，需要先重新安装 Mod 加载环境；这与是否为房主无关。
+
+## 网络仿真
+
+无需启动 PEAK 即可模拟房主、抢夺者和目标队友三个节点，并注入跨省、跨国、抖动、丢包和可靠重传：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\simulate-network.ps1"
+```
+
+仿真器用于验证库存同步状态机和超时边界；它不能代替两个真实 PEAK/Photon 客户端的端到端测试。

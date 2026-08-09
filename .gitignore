@@ -2,6 +2,7 @@ bin/
 obj/
 *.dll
 *.pdb
+tools/*.exe
 *.zip
 release_pkg/
 *.user
