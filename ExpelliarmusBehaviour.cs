@@ -12,11 +12,14 @@ namespace Expelliarmus
         private const float MAX_RANGE = 7.5f;
         private const float AIM_ITEM_ANGLE = 25f;
         private const float COOLDOWN = 0.4f;
+        private const float INVENTORY_SYNC_TIMEOUT = 3f;
+        private const float INVENTORY_SYNC_POLL_INTERVAL = 0.05f;
 
         private static ManualLogSource logger;
 
         private Type characterType;
         private Type itemType;
+        private Type photonNetworkType;
         private float nextUseTime;
 
         public static void Initialize(ManualLogSource log)
@@ -56,14 +59,21 @@ namespace Expelliarmus
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
-                if (asm.GetName().Name != "Assembly-CSharp") continue;
-                characterType = asm.GetType("Character");
-                itemType = asm.GetType("Item");
-                break;
+                if (asm.GetName().Name == "Assembly-CSharp")
+                {
+                    characterType = asm.GetType("Character");
+                    itemType = asm.GetType("Item");
+                }
+
+                if (photonNetworkType == null)
+                {
+                    photonNetworkType = asm.GetType("Photon.Pun.PhotonNetwork");
+                }
             }
 
             logger.LogInfo("Character type: " + (characterType != null ? characterType.FullName : "NOT FOUND"));
             logger.LogInfo("Item type: " + (itemType != null ? itemType.FullName : "NOT FOUND"));
+            logger.LogInfo("PhotonNetwork type: " + (photonNetworkType != null ? photonNetworkType.FullName : "NOT FOUND"));
         }
 
         private object GetLocalCharacter()
@@ -203,6 +213,8 @@ namespace Expelliarmus
 
         private bool StealCurrentItem(object localCharacter, object targetCharacter, object item)
         {
+            LogNetworkContext();
+
             object localView = GetMemberValue(localCharacter, "view");
             if (localView == null)
             {
@@ -219,7 +231,9 @@ namespace Expelliarmus
             }
 
             byte targetSlotID = Convert.ToByte(GetMemberValue(targetSlot, "itemSlotID"));
-            if (!DropLocalHeldItem(localCharacter))
+            object localPlayer;
+            int localDroppedSlotID;
+            if (!DropLocalHeldItem(localCharacter, out localPlayer, out localDroppedSlotID))
             {
                 logger.LogInfo("Expelliarmus: could not drop the local held item.");
                 return false;
@@ -238,20 +252,31 @@ namespace Expelliarmus
                 return false;
             }
 
-            StartCoroutine(FinishStealAfterInventorySync(localView, item));
+            StartCoroutine(FinishStealAfterInventorySync(
+                localView,
+                item,
+                localPlayer,
+                localDroppedSlotID,
+                targetPlayer,
+                targetSlotID));
             logger.LogInfo("Expelliarmus: transfer requested for target slot " + targetSlotID + ".");
             return true;
         }
 
-        private bool DropLocalHeldItem(object localCharacter)
+        private bool DropLocalHeldItem(
+            object localCharacter,
+            out object localPlayer,
+            out int localDroppedSlotID)
         {
+            localPlayer = GetMemberValue(localCharacter, "player");
+            localDroppedSlotID = -1;
+
             object currentItem = GetCurrentItem(localCharacter);
             if (currentItem == null)
             {
                 return true;
             }
 
-            object localPlayer = GetMemberValue(localCharacter, "player");
             object localSlot = FindSlotContainingItem(localPlayer, currentItem);
             if (localSlot == null)
             {
@@ -260,6 +285,7 @@ namespace Expelliarmus
             }
 
             byte localSlotID = Convert.ToByte(GetMemberValue(localSlot, "itemSlotID"));
+            localDroppedSlotID = localSlotID;
             Component currentItemComponent = currentItem as Component;
             Vector3 dropPosition = currentItemComponent != null
                 ? currentItemComponent.transform.position + Vector3.down * 0.2f
@@ -287,9 +313,47 @@ namespace Expelliarmus
             return dropSent && unequipSent;
         }
 
-        private IEnumerator FinishStealAfterInventorySync(object localView, object item)
+        private IEnumerator FinishStealAfterInventorySync(
+            object localView,
+            object item,
+            object localPlayer,
+            int localDroppedSlotID,
+            object targetPlayer,
+            byte targetSlotID)
         {
-            yield return new WaitForSeconds(0.12f);
+            float startedAt = Time.realtimeSinceStartup;
+            float deadline = startedAt + INVENTORY_SYNC_TIMEOUT;
+            bool localSlotReady = localDroppedSlotID < 0;
+            bool targetSlotReady = false;
+
+            while (Time.realtimeSinceStartup < deadline)
+            {
+                if (!localSlotReady)
+                {
+                    localSlotReady = IsInventorySlotEmpty(
+                        localPlayer,
+                        Convert.ToByte(localDroppedSlotID));
+                }
+                targetSlotReady = IsInventorySlotEmpty(targetPlayer, targetSlotID);
+
+                if (localSlotReady && targetSlotReady)
+                {
+                    break;
+                }
+                yield return new WaitForSeconds(INVENTORY_SYNC_POLL_INTERVAL);
+            }
+
+            float elapsed = Time.realtimeSinceStartup - startedAt;
+            if (!localSlotReady || !targetSlotReady)
+            {
+                logger.LogWarning(
+                    "Expelliarmus: inventory sync timed out after " + elapsed.ToString("F2") +
+                    "s. localReady=" + localSlotReady + " targetReady=" + targetSlotReady + ".");
+                yield break;
+            }
+
+            logger.LogInfo(
+                "Expelliarmus: inventory sync confirmed after " + elapsed.ToString("F2") + "s.");
 
             Component itemComponent = item as Component;
             if (itemComponent == null)
@@ -312,6 +376,49 @@ namespace Expelliarmus
             logger.LogInfo(requestSent
                 ? "Expelliarmus: master pickup request sent."
                 : "Expelliarmus: failed to send master pickup request.");
+        }
+
+        private bool IsInventorySlotEmpty(object player, byte slotID)
+        {
+            if (player == null) return false;
+
+            try
+            {
+                MethodInfo getSlot = FindMethod(player.GetType(), "GetItemSlot", 1);
+                if (getSlot == null) return false;
+                object slot = getSlot.Invoke(player, new object[] { slotID });
+                return slot != null && TryInvokeBool(slot, "IsEmpty");
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug("IsInventorySlotEmpty: " + ex.Message);
+                return false;
+            }
+        }
+
+        private void LogNetworkContext()
+        {
+            if (photonNetworkType == null)
+            {
+                logger.LogInfo("Expelliarmus network: PhotonNetwork type unavailable.");
+                return;
+            }
+
+            object inRoom = GetStaticMemberValue(photonNetworkType, "InRoom");
+            object isMaster = GetStaticMemberValue(photonNetworkType, "IsMasterClient");
+            object ping = null;
+            try
+            {
+                MethodInfo getPing = photonNetworkType.GetMethod(
+                    "GetPing",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (getPing != null) ping = getPing.Invoke(null, null);
+            }
+            catch { }
+
+            logger.LogInfo(
+                "Expelliarmus network: inRoom=" + inRoom +
+                " isMasterClient=" + isMaster + " ping=" + ping + "ms.");
         }
 
         private bool SendPhotonRpc(
@@ -533,6 +640,23 @@ namespace Expelliarmus
             if (field != null) return field.GetValue(target);
             var prop = AccessTools.Property(type, name);
             if (prop != null) return prop.GetValue(target, null);
+            return null;
+        }
+
+        private object GetStaticMemberValue(Type type, string name)
+        {
+            if (type == null) return null;
+            try
+            {
+                var field = AccessTools.Field(type, name);
+                if (field != null) return field.GetValue(null);
+                var prop = AccessTools.Property(type, name);
+                if (prop != null) return prop.GetValue(null, null);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug("GetStaticMemberValue " + name + ": " + ex.Message);
+            }
             return null;
         }
 
