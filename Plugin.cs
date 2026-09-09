@@ -1,5 +1,4 @@
 using BepInEx;
-using HarmonyLib;
 
 namespace Expelliarmus
 {
@@ -7,13 +6,10 @@ namespace Expelliarmus
     [BepInProcess("PEAK.exe")]
     public class Plugin : BaseUnityPlugin
     {
-        private Harmony harmony;
-
         private void Awake()
         {
             Logger.LogInfo(PluginInfo.Name + " v" + PluginInfo.Version + " loading...");
 
-            harmony = new Harmony(PluginInfo.GUID);
             ExpelliarmusBehaviour.Initialize(Logger);
 
             Logger.LogInfo(PluginInfo.Name + " loaded successfully!");
@@ -22,10 +18,7 @@ namespace Expelliarmus
 
         private void OnDestroy()
         {
-            if (harmony != null)
-            {
-                harmony.UnpatchSelf();
-            }
+            ExpelliarmusBehaviour.Shutdown();
             Logger.LogInfo(PluginInfo.Name + " unloaded");
         }
     }
@@ -34,6 +27,6 @@ namespace Expelliarmus
     {
         public const string GUID = "com.dawwnforu.expelliarmus";
         public const string Name = "Expelliarmus";
-        public const string Version = "1.0.4";
+        public const string Version = "1.0.5";
     }
 }

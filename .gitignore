@@ -8,3 +8,4 @@ release_pkg/
 *.user
 *.suo
 *.tmp
+artifacts/

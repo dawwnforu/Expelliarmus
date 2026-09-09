@@ -1,57 +1,53 @@
-# Expelliarmus / 除你武器
+﻿# Expelliarmus / 除你武器 1.0.5
 
-PEAK BepInEx 联机 Mod：将准心对准队友当前拿在手里的物品，按鼠标右键把物品抢到自己手中。
-
-## 抢夺规则
-
-- 只锁定队友当前从 1/2/3 栏拿在手里的物品。
-- 抢夺成功后，队友对应物品栏与手持状态变为空。
-- 目标物品进入你的物品栏，并立即装备到手中。
-- 如果你已经拿着物品，原手持物会先按 PEAK 原生掉落逻辑落到地面。
-- 槽位移除、地面掉落和拾取均交给主机处理，避免联机时两人同时持有同一物品。
-- 非房主也可以主动抢夺；客户端会等待主机确认双方槽位状态后再请求拾取。
+PEAK BepInEx Mod：伸出右手，瞄准队友手中的物品，将它抢到自己手里。
 
 ## 操作
 
-| 输入 | 功能 |
-| --- | --- |
-| 鼠标右键 | 抢夺准心指向的队友手持物 |
+- 按住游戏的“次要使用/伸手”键，默认鼠标右键；支持游戏内改键。
+- 可以先伸手，再对准物品。同一次按住只抢一次，松开后可以再次抢夺。
+- 目标为队友从第 1/2/3 格拿出的可丢弃物品，最大距离 7.5 米。
+- 自己已经拿着物品时，先把原物品放到地上，再抢夺。菜单、轮盘、昏迷和攀爬期间不触发。
 
-## 安装
+## 联机与物品转移
 
-1. 确保 PEAK 已安装 BepInEx 5。
-2. 将 `Expelliarmus.dll` 放入：
+使用游戏现有 RPC，设计上只需抢夺者安装，房主和队友无需安装本 Mod。
+
+1. 按选中格子和物品唯一编号核对目标，不按物品种类猜测格子。
+2. 请求房主通过原生掉落流程生成地面物品并更新库存。
+3. 确认地面物品编号一致，再让原持有者通过原生卸下流程释放手持对象。
+4. 等到旧手持对象已从网络中移除，再请求拾取新的房间物品。
+5. 确认自己的库存收到该编号后才记录成功。
+
+转移期间不重复发送请求。未收到确认时取消后续拾取；已经生成的地面物品保留，不凭客户端缓存复制或恢复物品。地面物品也可能被其他玩家先捡走。
+
+**仅抢夺者安装的限制：** 原生掉落请求只有格子编号，不能在房主执行时检查“该格是否仍为指定唯一编号”。若队友恰好在网络传输期间替换同一格物品，房主可能把替换后的物品放到地上；Mod 会拒绝拾取编号不符的物品。转移过程中切换装备也可能被原生卸下请求打断，需要重新选取。完全排除这些竞态需要房主及持有者配合安装处理逻辑。
+
+## 安装与构建
+
+需要 PEAK 和 BepInEx 5。将 `Expelliarmus.dll` 放到：
 
 ```text
 PEAK\BepInEx\plugins\Expelliarmus\Expelliarmus.dll
 ```
 
-3. 启动 PEAK。
-
-## 构建
+关闭 PEAK 后，在本项目目录构建并安装：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "D:\trae projects\1\Expelliarmus\build.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -PeakDir 'D:\steam\steamapps\common\PEAK' -Install
 ```
 
-构建脚本会编译 DLL，并尝试复制到 PEAK 的 BepInEx 插件目录。覆盖插件前需要完全退出 PEAK，否则 DLL 会被游戏进程锁定。
+省略 `-Install` 只生成项目内的 DLL/PDB。
 
-## 联机说明
-
-Mod 通过 PEAK 自带的 Photon RPC 请求主机执行物品栏移除、掉落和拾取。建议房间内所有玩家安装相同版本。排查问题时查看：
-
-```text
-PEAK\BepInEx\LogOutput.log
-```
-
-Steam 更新可能会重建 PEAK 游戏目录并删除 `BepInEx`、`winhttp.dll` 和插件。若日志文件或整个 `BepInEx` 目录消失，需要先重新安装 Mod 加载环境；这与是否为房主无关。
-
-## 网络仿真
-
-无需启动 PEAK 即可模拟房主、抢夺者和目标队友三个节点，并注入跨省、跨国、抖动、丢包和可靠重传：
+## 验证
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ".\simulate-network.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\test.ps1 -PeakDir 'D:\steam\steamapps\common\PEAK'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 ```
 
-仿真器用于验证库存同步状态机和超时边界；它不能代替两个真实 PEAK/Photon 客户端的端到端测试。
+`test.ps1` 执行实际行为代码的回归检查（Unity/网络替身），并核对安装游戏的 RPC 签名。覆盖同类物品、空格残留数据、菜单/昏迷/攀爬、持续伸手、重复触发、掉落超时、旧对象未释放、拾取拒绝和房主格子变化。
+
+`verify.ps1` 检查安装文件与版本；游戏运行过新版后可加 `-RequireRuntimeLoad` 检查加载日志。这些检查不能替代双人 PEAK 实测。旧的 `simulate-network.ps1` 只模拟 1.0.4 的等待策略，不用于验证 1.0.5 的物品转移。
+
+双人实测重点：抢夺者分别作为房主/非房主、队友不装 Mod、两件同类物品、自己手持物品、队友中途换物、高延迟，以及物品数量和剩余使用次数是否一致。

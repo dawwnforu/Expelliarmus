@@ -1,126 +1,121 @@
 param(
-    [string]$Configuration = "Release"
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Release",
+
+    [string]$PeakDir = $env:PEAK_DIR,
+
+    [string]$CompilerPath = (
+        Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    ),
+
+    [string]$OutputDir = $PSScriptRoot,
+
+    [switch]$Install
 )
 
 $ErrorActionPreference = "Stop"
 
-$peakDir = "D:\steam\steamapps\common\PEAK"
-$managedDir = "$peakDir\PEAK_Data\Managed"
-$bepInExCore = "$peakDir\BepInEx\core"
-$pluginsDir = "$peakDir\BepInEx\plugins\Expelliarmus"
-$srcDir = "D:\trae projects\1\Expelliarmus"
-
-$csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-if (-not (Test-Path $csc)) {
-    Write-Error "C# compiler not found at $csc"
-    exit 1
+if ([string]::IsNullOrWhiteSpace($PeakDir)) {
+    throw @"
+PEAK game directory is required. Set it with either:
+  `$env:PEAK_DIR = 'D:\SteamLibrary\steamapps\common\PEAK'
+  .\build.ps1 -PeakDir 'D:\SteamLibrary\steamapps\common\PEAK'
+"@
 }
 
-$outputDll = "$srcDir\Expelliarmus.dll"
-$outputPdb = "$srcDir\Expelliarmus.pdb"
+$PeakDir = [System.IO.Path]::GetFullPath($PeakDir)
+$OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+$sourceDir = $PSScriptRoot
+$managedDir = Join-Path $PeakDir "PEAK_Data\Managed"
+$bepInExCore = Join-Path $PeakDir "BepInEx\core"
+$pluginsDir = Join-Path $PeakDir "BepInEx\plugins\Expelliarmus"
+
+if (-not (Test-Path -LiteralPath $CompilerPath -PathType Leaf)) {
+    throw "C# compiler not found: $CompilerPath"
+}
 
 $references = @(
-    "$managedDir\UnityEngine.dll",
-    "$managedDir\UnityEngine.CoreModule.dll",
-    "$managedDir\UnityEngine.UI.dll",
-    "$managedDir\UnityEngine.UIModule.dll",
-    "$managedDir\UnityEngine.IMGUIModule.dll",
-    "$managedDir\UnityEngine.InputLegacyModule.dll",
-    "$managedDir\UnityEngine.PhysicsModule.dll",
-    "$managedDir\UnityEngine.TextRenderingModule.dll",
-    "$managedDir\UnityEngine.TextCoreTextEngineModule.dll",
-    "$managedDir\UnityEngine.ImageConversionModule.dll",
-    "$managedDir\netstandard.dll",
-    "$bepInExCore\0Harmony.dll",
-    "$bepInExCore\BepInEx.dll",
-    "$bepInExCore\BepInEx.Harmony.dll"
-)
+    "Assembly-CSharp.dll",
+    "Zorro.Core.Runtime.dll",
+    "PhotonUnityNetworking.dll",
+    "PhotonRealtime.dll",
+    "Photon3Unity3D.dll",
+    "UnityEngine.dll",
+    "UnityEngine.CoreModule.dll",
+    "UnityEngine.UI.dll",
+    "UnityEngine.UIModule.dll",
+    "UnityEngine.IMGUIModule.dll",
+    "UnityEngine.InputLegacyModule.dll",
+    "UnityEngine.PhysicsModule.dll",
+    "UnityEngine.TextRenderingModule.dll",
+    "UnityEngine.TextCoreTextEngineModule.dll",
+    "UnityEngine.ImageConversionModule.dll",
+    "netstandard.dll"
+) | ForEach-Object { Join-Path $managedDir $_ }
 
-$refPaths = ""
-foreach ($ref in $references) {
-    if (Test-Path $ref) {
-        $refPaths += "`"/reference:$ref`" "
-    } else {
-        Write-Warning "Reference not found: $ref"
-    }
-}
+$references += @(
+    "0Harmony.dll",
+    "BepInEx.dll",
+    "BepInEx.Harmony.dll"
+) | ForEach-Object { Join-Path $bepInExCore $_ }
 
 $sources = @(
-    "$srcDir\Plugin.cs",
-    "$srcDir\ExpelliarmusBehaviour.cs"
+    (Join-Path $sourceDir "Plugin.cs"),
+    (Join-Path $sourceDir "ExpelliarmusBehaviour.cs")
 )
 
-$srcPaths = ""
-foreach ($src in $sources) {
-    if (Test-Path $src) {
-        $srcPaths += "`"$src`" "
-    } else {
-        Write-Error "Source not found: $src"
-        exit 1
-    }
+$missing = @($references + $sources | Where-Object {
+    -not (Test-Path -LiteralPath $_ -PathType Leaf)
+})
+if ($missing.Count -gt 0) {
+    throw "Build dependencies are missing:`n  $($missing -join "`n  ")"
 }
 
-$args = @(
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+$outputDll = Join-Path $OutputDir "Expelliarmus.dll"
+$outputPdb = Join-Path $OutputDir "Expelliarmus.pdb"
+
+$compilerArgs = @(
     "/target:library",
-    "/out:`"$outputDll`"",
-    "/debug",
-    "/optimize",
+    "/out:$outputDll",
     "/platform:x64",
-    "/warn:3"
+    "/warn:3",
+    "/debug+"
 )
+if ($Configuration -eq "Release") {
+    $compilerArgs += "/optimize+"
+} else {
+    $compilerArgs += @("/debug+", "/optimize-")
+}
+$compilerArgs += $references | ForEach-Object { "/reference:$_" }
+$compilerArgs += $sources
 
-$compilerArgs = "$($args -join ' ') $refPaths $srcPaths"
+Write-Host "Building Expelliarmus ($Configuration)"
+Write-Host "PEAK:   $PeakDir"
+Write-Host "Source: $sourceDir"
+Write-Host "Output: $outputDll"
 
-Write-Host "========================================="
-Write-Host "Building Expelliarmus Mod"
-Write-Host "========================================="
-Write-Host "Compiler: $csc"
-Write-Host "Output:   $outputDll"
-Write-Host ""
-
-$cmd = "& `"$csc`" $compilerArgs"
-Write-Host "Command:"
-Write-Host $cmd
-Write-Host ""
-
-try {
-    Invoke-Expression $cmd
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Compilation failed with exit code $LASTEXITCODE"
-        exit $LASTEXITCODE
-    }
-} catch {
-    Write-Error "Compilation error: $_"
-    exit 1
+& $CompilerPath @compilerArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Compilation failed with exit code $LASTEXITCODE"
+}
+if (-not (Test-Path -LiteralPath $outputDll -PathType Leaf)) {
+    throw "Compiler did not create the expected output: $outputDll"
 }
 
-if (Test-Path $outputDll) {
-    $dllSize = (Get-Item $outputDll).Length
-    Write-Host ""
-    Write-Host "========================================="
-    Write-Host "BUILD SUCCESSFUL!"
-    Write-Host "Output: $outputDll"
-    Write-Host "Size:   $dllSize bytes"
-    Write-Host "========================================="
+Write-Host "Build successful: $outputDll"
 
-    Write-Host ""
-    Write-Host "Copying to plugins folder..."
-
-    if (-not (Test-Path $pluginsDir)) {
-        New-Item -ItemType Directory -Path $pluginsDir -Force | Out-Null
+if ($Install) {
+    New-Item -ItemType Directory -Path $pluginsDir -Force | Out-Null
+    Copy-Item -LiteralPath $outputDll -Destination (
+        Join-Path $pluginsDir "Expelliarmus.dll"
+    ) -Force
+    if (Test-Path -LiteralPath $outputPdb -PathType Leaf) {
+        Copy-Item -LiteralPath $outputPdb -Destination (
+            Join-Path $pluginsDir "Expelliarmus.pdb"
+        ) -Force
     }
-
-    Copy-Item -Path $outputDll -Destination "$pluginsDir\Expelliarmus.dll" -Force
-    if (Test-Path $outputPdb) {
-        Copy-Item -Path $outputPdb -Destination "$pluginsDir\Expelliarmus.pdb" -Force
-    }
-
-    Write-Host "Installed to: $pluginsDir\Expelliarmus.dll"
-    Write-Host ""
-    Write-Host "Ready! Launch PEAK to test the mod."
-    Write-Host "  - Aim at a teammate's held item"
-    Write-Host "  - Right click to steal it into your hand"
+    Write-Host "Installed to: $pluginsDir"
 } else {
-    Write-Error "Output DLL not created!"
-    exit 1
+    Write-Host "The game directory was not modified. Re-run with -Install to install."
 }

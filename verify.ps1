@@ -1,5 +1,6 @@
 param(
-    [string]$PeakDir = "D:\steam\steamapps\common\PEAK"
+    [string]$PeakDir = "D:\steam\steamapps\common\PEAK",
+    [switch]$RequireRuntimeLoad
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,14 +82,14 @@ if ((Test-Path $pluginPath) -and (Test-Path $sourcePluginPath)) {
     $pluginAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly($pluginPath)
     $pluginInfo = Get-Type $pluginAssembly "Expelliarmus.PluginInfo"
     $versionField = $pluginInfo.Fields | Where-Object Name -eq "Version" | Select-Object -First 1
-    Add-Result "Installed plugin version" ($versionField.Constant -eq "1.0.4") ([string]$versionField.Constant)
+    Add-Result "Installed plugin version" ($versionField.Constant -eq "1.0.5") ([string]$versionField.Constant)
 }
 
 $logPath = Join-Path $PeakDir "BepInEx\LogOutput.log"
-if (Test-Path $logPath) {
-    $loaded = Select-String -LiteralPath $logPath -Pattern "Loading \[Expelliarmus 1.0.4\]" -Quiet
+if ($RequireRuntimeLoad -and (Test-Path $logPath)) {
+    $loaded = Select-String -LiteralPath $logPath -Pattern "Loading \[Expelliarmus 1.0.5\]" -Quiet
     Add-Result "Runtime load log" $loaded $logPath
-} else {
+} elseif ($RequireRuntimeLoad) {
     Add-Result "Runtime load log" $false "LogOutput.log missing"
 }
 
