@@ -1,10 +1,21 @@
-# Expelliarmus / 除你武器 1.0.8
+# Expelliarmus / 除你武器 1.0.9
 
 你的零食？现在是我的了。给损友一点小小的反击！ / Your snack? Mine now. A little payback for your prankster pals.
 
 [新手安装与更新 / Beginner installation and updates](#新手安装与更新--beginner-installation-and-updates)
 
 PEAK BepInEx Mod：伸出右手，瞄准队友手中的物品，将它抢到自己手里。
+
+
+![Expelliarmus — DAwwN](artwork/cover-beach.png)
+
+
+## 玩法小剧场 / Co-op mischief
+
+![双语玩法漫画 / Bilingual gameplay comic](artwork/gameplay-comic-bilingual.png)
+
+队友先到，我随后；损友的好意，原样奉还。
+You first. I'll catch up. A kind offer, returned to sender.
 
 ## 操作
 

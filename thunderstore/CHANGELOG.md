@@ -1,3 +1,8 @@
+# 1.0.9
+
+- New PEAK-inspired DAwwN watermark covers and a bilingual gameplay comic. No gameplay changes.
+- 更新 DAwwN 风格水印封面，加入中英双语玩法漫画；玩法不变。
+
 # 1.0.8
 
 - Short bilingual listing description focused on playful co-op fun. Controls and testing details remain in the full description. No gameplay changes.

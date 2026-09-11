@@ -8,6 +8,17 @@ Your teammate has a banana. You have a reaching hand.
 
 **Hold right-click and aim at a teammate's held item to take it.** You can start reaching before aiming. Release the button before grabbing again.
 
+
+![Expelliarmus — DAwwN](https://raw.githubusercontent.com/dawwnforu/Expelliarmus/master/artwork/cover-beach.png)
+
+
+## 玩法小剧场 / Co-op mischief
+
+![双语玩法漫画 / Bilingual gameplay comic](https://raw.githubusercontent.com/dawwnforu/Expelliarmus/master/artwork/gameplay-comic-bilingual.png)
+
+队友先到，我随后；损友的好意，原样奉还。
+You first. I'll catch up. A kind offer, returned to sender.
+
 ## How to play
 
 - Uses PEAK's secondary-use/reach binding (right mouse button by default), including custom bindings.
