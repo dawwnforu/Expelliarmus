@@ -1,6 +1,6 @@
 {
     "name":  "Expelliarmus",
-    "version_number":  "1.0.6",
+    "version_number":  "1.0.7",
     "website_url":  "https://github.com/dawwnforu/Expelliarmus",
     "description":  "Hold right-click and aim to grab a teammate\u0027s held item. New hand-side handoff reduces the floor-drop step. Grabber-only guest play tested in 1.0.5; 1.0.6 visuals need playtesting.",
     "dependencies":  [

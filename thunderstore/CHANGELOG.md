@@ -1,3 +1,9 @@
+# 1.0.7
+
+- Documentation update: bilingual beginner instructions for Windows manager/manual installation, updates, duplicate DLLs and troubleshooting.
+- Explain experimental Mac compatibility-layer installation and the absence of verified native macOS support.
+- Use generic example paths; gameplay code is unchanged.
+
 # 1.0.6
 
 - Move the temporary transfer object to the receiving hand and suspend its physics while waiting for owner release.

@@ -27,6 +27,6 @@ namespace Expelliarmus
     {
         public const string GUID = "com.dawwnforu.expelliarmus";
         public const string Name = "Expelliarmus";
-        public const string Version = "1.0.6";
+        public const string Version = "1.0.7";
     }
 }
