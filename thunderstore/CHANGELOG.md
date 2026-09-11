@@ -1,3 +1,8 @@
+# 1.0.8
+
+- Short bilingual listing description focused on playful co-op fun. Controls and testing details remain in the full description. No gameplay changes.
+- 首页简介改为简短中英双语，操作与测试说明保留在详情页；玩法不变。
+
 # 1.0.7
 
 - Documentation update: bilingual beginner instructions for Windows manager/manual installation, updates, duplicate DLLs and troubleshooting.

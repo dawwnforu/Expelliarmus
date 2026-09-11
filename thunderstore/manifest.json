@@ -1,8 +1,8 @@
 {
     "name":  "Expelliarmus",
-    "version_number":  "1.0.7",
+    "version_number":  "1.0.8",
     "website_url":  "https://github.com/dawwnforu/Expelliarmus",
-    "description":  "Hold right-click and aim to grab a teammate\u0027s held item. New hand-side handoff reduces the floor-drop step. Grabber-only guest play tested in 1.0.5; 1.0.6 visuals need playtesting.",
+    "description":  "你的零食？现在是我的了。给损友一点小小的反击！ / Your snack? Mine now. A little payback for your prankster pals.",
     "dependencies":  [
                          "BepInEx-BepInExPack_PEAK-5.4.75301"
                      ]

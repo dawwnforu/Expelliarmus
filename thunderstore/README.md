@@ -1,5 +1,7 @@
 # Expelliarmus / 除你武器
 
+你的零食？现在是我的了。给损友一点小小的反击！ / Your snack? Mine now. A little payback for your prankster pals.
+
 [新手安装与更新 / Beginner installation and updates](#新手安装与更新--beginner-installation-and-updates)
 
 Your teammate has a banana. You have a reaching hand.
