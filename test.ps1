@@ -14,7 +14,8 @@ try {
     foreach ($entry in @(
         @('CharacterItems','DropItemFromSlotRPC','System.Byte,UnityEngine.Vector3'),
         @('CharacterItems','EquipSlotRpc','System.Int32,System.Int32'),
-        @('Item','RequestPickup','Photon.Pun.PhotonView')
+        @('Item','RequestPickup','Photon.Pun.PhotonView'),
+        @('Item','SetKinematicRPC','System.Boolean,UnityEngine.Vector3,UnityEngine.Quaternion')
     )) {
         $type = $game.MainModule.Types | Where-Object Name -eq $entry[0]
         $method = $type.Methods | Where-Object Name -eq $entry[1]
@@ -23,5 +24,5 @@ try {
             throw "Changed native RPC: $($entry[0]).$($entry[1])"
         }
     }
-    Write-Host 'PASS: all three RPC signatures and PunRPC attributes match installed PEAK.'
+    Write-Host 'PASS: all four RPC signatures and PunRPC attributes match installed PEAK.'
 } finally { $game.Dispose() }

@@ -18,6 +18,24 @@ namespace Expelliarmus
         private bool usedThisPress;
         private float nextAttempt;
         private Item droppedItem;
+        private Item handoffItem;
+
+        private void ReleaseHandoff()
+        {
+            var item = handoffItem;
+            handoffItem = null;
+            if (item != null && item.data != null && IsGroundItem(item, item.data.guid) &&
+                PhotonNetwork.GetPhotonView(item.photonView.ViewID) == item.photonView)
+                item.photonView.RPC("SetKinematicRPC", RpcTarget.AllViaServer,
+                    false, item.transform.position, item.transform.rotation);
+        }
+
+        private void OnDisable()
+        {
+            StopAllCoroutines();
+            ReleaseHandoff();
+            busy = false;
+        }
 
         public static void Initialize(ManualLogSource log)
         {
@@ -121,7 +139,11 @@ namespace Expelliarmus
                     original.data.guid != guid || HeldSlot(target, original) == null ||
                     !local.player.HasEmptySlot(original.itemID)) yield break;
 
-                yield return DropHeldItem(target, original);
+                var camera = Camera.main;
+                if (camera == null) yield break;
+                var handPosition = camera.transform.position + camera.transform.forward * 0.6f
+                    + Vector3.down * 0.25f;
+                yield return DropHeldItem(target, original, handPosition);
                 var ground = droppedItem;
                 if (ground == null || !CanAct(local) || local.data.currentItem != null ||
                     !local.player.HasEmptySlot(ground.itemID) || !IsGroundItem(ground, guid)) yield break;
@@ -142,12 +164,13 @@ namespace Expelliarmus
             }
             finally
             {
+                ReleaseHandoff();
                 busy = false;
                 nextAttempt = Time.unscaledTime + 0.4f;
             }
         }
 
-        private IEnumerator DropHeldItem(Character character, Item original)
+        private IEnumerator DropHeldItem(Character character, Item original, Vector3? handPosition = null)
         {
             droppedItem = null;
             var slot = HeldSlot(character, original);
@@ -161,16 +184,24 @@ namespace Expelliarmus
             // ponytail: vanilla RPC has no expected-GUID argument; rejecting an in-flight
             // slot replacement requires a cooperating mod on the host/owner.
             characterItems.photonView.RPC("DropItemFromSlotRPC", RpcTarget.MasterClient,
-                slot.itemSlotID, original.transform.position + Vector3.down * 0.2f);
+                slot.itemSlotID, handPosition ?? (original.transform.position + Vector3.down * 0.2f));
 
             var deadline = Time.unscaledTime + SyncTimeout;
             Item ground = null;
             while (Time.unscaledTime < deadline)
             {
                 ground = FindGroundItem(guid);
+                if (ground != null && handPosition.HasValue && handoffItem == null)
+                {
+                    // Keep the native room-owned transfer object at the receiving hand
+                    // while the owner acknowledges unequipping. No floor pickup first.
+                    handoffItem = ground;
+                    ground.photonView.RPC("SetKinematicRPC", RpcTarget.AllViaServer,
+                        true, handPosition.Value, ground.transform.rotation);
+                }
                 if (ground != null && character != null && character.player != null &&
                     !InventoryContains(character.player, guid)) break;
-                yield return new WaitForSecondsRealtime(0.05f);
+                yield return null;
             }
             if (ground == null || character == null || character.player == null ||
                 InventoryContains(character.player, guid))
@@ -191,7 +222,7 @@ namespace Expelliarmus
             // acknowledgement before allowing pickup of the replacement ground object.
             deadline = Time.unscaledTime + SyncTimeout;
             while (PhotonNetwork.GetPhotonView(originalViewID) != null && Time.unscaledTime < deadline)
-                yield return new WaitForSecondsRealtime(0.05f);
+                yield return null;
             if (PhotonNetwork.GetPhotonView(originalViewID) != null)
             {
                 logger.LogWarning("Expelliarmus: owner release not confirmed; pickup cancelled, ground item retained.");

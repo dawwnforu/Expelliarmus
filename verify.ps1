@@ -82,12 +82,12 @@ if ((Test-Path $pluginPath) -and (Test-Path $sourcePluginPath)) {
     $pluginAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly($pluginPath)
     $pluginInfo = Get-Type $pluginAssembly "Expelliarmus.PluginInfo"
     $versionField = $pluginInfo.Fields | Where-Object Name -eq "Version" | Select-Object -First 1
-    Add-Result "Installed plugin version" ($versionField.Constant -eq "1.0.5") ([string]$versionField.Constant)
+    Add-Result "Installed plugin version" ($versionField.Constant -eq "1.0.6") ([string]$versionField.Constant)
 }
 
 $logPath = Join-Path $PeakDir "BepInEx\LogOutput.log"
 if ($RequireRuntimeLoad -and (Test-Path $logPath)) {
-    $loaded = Select-String -LiteralPath $logPath -Pattern "Loading \[Expelliarmus 1.0.5\]" -Quiet
+    $loaded = Select-String -LiteralPath $logPath -Pattern "Loading \[Expelliarmus 1.0.6\]" -Quiet
     Add-Result "Runtime load log" $loaded $logPath
 } elseif ($RequireRuntimeLoad) {
     Add-Result "Runtime load log" $false "LogOutput.log missing"

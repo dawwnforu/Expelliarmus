@@ -16,7 +16,8 @@ class Regression
     static Action beforeDrop;
     static Character target;
     static Item targetItem, ground;
-    static int pickups, drops;
+    static int pickups, drops, freezes, releases;
+    static bool kinematic;
     static void Check(bool value, string name)
     {
         if (!value) throw new Exception(name);
@@ -56,6 +57,7 @@ class Regression
         Time.unscaledTime = 0;
         Item.ALL_ITEMS.Clear(); PhotonView.Views.Clear();
         pickups = drops = 0; delayDrop = denyPickup = keepOwnerView = false;
+        freezes = releases = 0; kinematic = false;
         beforeDrop = null; ground = null;
         mod = new ExpelliarmusBehaviour();
         Set("logger", new BepInEx.Logging.ManualLogSource());
@@ -77,9 +79,17 @@ class Regression
             // PEAK uses the host's CURRENT slot data, not data supplied by the caster.
             if (slot.IsEmpty()) return;
             ground = new Item { data = slot.data, itemID = slot.prefab.itemID, itemState = ItemState.Ground };
+            ground.transform.position = (Vector3)args[1];
             ground.photonView = new PhotonView { Item = ground, IsRoomView = true };
             Item.ALL_ITEMS.Add(ground);
             slot.prefab = null; // PEAK EmptyOut retains data. Empty slots must be ignored.
+        }
+        else if (method == "SetKinematicRPC")
+        {
+            Check(destination == RpcTarget.AllViaServer && view.IsRoomView,
+                "handoff physics is synchronized to unmodded clients");
+            kinematic = (bool)args[0];
+            if (kinematic) freezes++; else releases++;
         }
         else if (method == "EquipSlotRpc")
         {
@@ -91,6 +101,7 @@ class Regression
             Check(destination == RpcTarget.MasterClient && view.IsRoomView, "pickup must use a room-owned object");
             Check(view.Item.itemState == ItemState.Ground, "must never pick up a held view");
             Check(PhotonNetwork.GetPhotonView(targetItem.photonView.ViewID) == null, "wait for owner's held-view destruction");
+            Check(kinematic, "handoff must stay suspended until pickup");
             pickups++;
             if (denyPickup) return;
             var receiver = ((PhotonView)args[0]).Character;
@@ -127,6 +138,15 @@ class Regression
         Check(target.player.itemSlots[1].IsEmpty() && target.data.currentItem == null, "source released");
         Check((bool)Call("InventoryContains", Character.localCharacter.player, targetItem.data.guid), "destination received exact instance");
         Check(!(bool)Call("InventoryContains", target.player, targetItem.data.guid), "stale empty-slot data is not ownership");
+        Check(freezes == 1 && releases == 0, "successful handoff freezes once and never touches destroyed pickup");
+        Check(Math.Abs(ground.transform.position.z - 0.6f) < 0.001f &&
+            Math.Abs(ground.transform.position.y + 0.25f) < 0.001f,
+            "transfer spawns in front of receiving camera, not at teammate feet");
+
+        Reset();
+        var pending = (IEnumerator)Call("DropHeldItem", target, targetItem, (Vector3?)new Vector3(0, 1, 0));
+        keepOwnerView = true; pending.MoveNext(); Call("OnDisable");
+        Check(freezes == 1 && releases == 1 && !kinematic, "disabling mod releases pending handoff");
 
         Reset(); target.refs.items.currentSelectedSlot = Zorro.Core.Optionable<byte>.Some(0);
         Check(Call("HeldSlot", target, targetItem) == null, "selection mismatch must cancel");
@@ -139,8 +159,10 @@ class Regression
         Check(pickups == 0 && target.data.currentItem == targetItem && !target.player.itemSlots[1].IsEmpty(), "drop timeout preserves source");
         Reset(); keepOwnerView = true; Transfer();
         Check(pickups == 0 && ground != null && Item.ALL_ITEMS.Contains(ground), "release timeout leaves ground item and forbids pickup");
+        Check(releases == 1 && !kinematic, "owner timeout restores gravity");
         Reset(); denyPickup = true; Transfer();
         Check(pickups == 1 && Item.ALL_ITEMS.Contains(ground), "denial retains ground item; no retry/copy");
+        Check(releases == 1 && !kinematic, "pickup timeout restores gravity");
 
         Reset(); var replacement = new Item { itemID = 11, data = new ItemInstanceData { guid = Guid.NewGuid() } };
         beforeDrop = delegate { target.player.itemSlots[1].prefab = replacement; target.player.itemSlots[1].data = replacement.data; };
@@ -151,6 +173,7 @@ class Regression
         Reset(); var localOld = Hold(Character.localCharacter, 2, 9); Transfer();
         Check(drops == 2 && pickups == 1, "own held item is dropped before target transfer");
         Check(Call("FindGroundItem", localOld.data.guid) != null, "own previous item remains on ground");
+        Check(freezes == 1, "own dropped item must not be suspended");
 
         Reset(); Character.localCharacter.input.useSecondaryIsPressed = true;
         GUIManager.instance.windowBlockingInput = true; Call("Update");
@@ -192,15 +215,18 @@ namespace UnityEngine
         public Transform transform = new Transform(); public GameObject gameObject;
         public PhotonView photonView;
     }
-    public class MonoBehaviour : Component { public void StartCoroutine(IEnumerator a) { Regression.RunCoroutine(a); } }
-    public class Transform { public Vector3 position; public Vector3 forward = new Vector3(); }
+    public class MonoBehaviour : Component { public void StartCoroutine(IEnumerator a) { Regression.RunCoroutine(a); } public void StopAllCoroutines() {} }
+    public struct Quaternion {}
+    public class Transform { public Vector3 position; public Quaternion rotation; public Vector3 forward = new Vector3(0, 0, 1); }
     public struct Vector3
     {
-        public static Vector3 down; public float magnitude { get { return 1; } }
+        public float x, y, z;
+        public Vector3(float a, float b, float c) { x = a; y = b; z = c; }
+        public static Vector3 down = new Vector3(0, -1, 0); public float magnitude { get { return 1; } }
         public static float Angle(Vector3 a, Vector3 b) { return 0; }
-        public static Vector3 operator +(Vector3 a, Vector3 b) { return a; }
-        public static Vector3 operator -(Vector3 a, Vector3 b) { return a; }
-        public static Vector3 operator *(Vector3 a, float b) { return a; }
+        public static Vector3 operator +(Vector3 a, Vector3 b) { return new Vector3(a.x+b.x,a.y+b.y,a.z+b.z); }
+        public static Vector3 operator -(Vector3 a, Vector3 b) { return new Vector3(a.x-b.x,a.y-b.y,a.z-b.z); }
+        public static Vector3 operator *(Vector3 a, float b) { return new Vector3(a.x*b,a.y*b,a.z*b); }
     }
     public class Camera : Component { public static Camera main = new Camera(); }
     public class Collider { public object Parent; public T GetComponentInParent<T>() where T : class { return Parent as T; } }
